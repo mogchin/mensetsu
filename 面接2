@@ -1343,10 +1343,19 @@ async def get_candidate_context(
     # 担当者 Member オブジェクト取得（メインサーバー）
     interviewer = main_guild.get_member(interviewer_id) \
         or await utils.safe_fetch_member(main_guild, interviewer_id)
-    if interviewer is None or interviewer_role not in interviewer.roles:
-        await send_error("操作権限がありません。")
-        return None
 
+    if interviewer is None or interviewer_role not in interviewer.roles:
+        # 設定されている担当者が存在しない、またはロールを失っている
+        # → ボタンを押した人が面接担当ロールを持っているなら担当者を引き継ぐ
+        if main_member and interviewer_role in main_member.roles:
+            cp["interviewer_id"] = main_member.id
+            interviewer_id = main_member.id
+            interviewer = main_member
+            await data_manager.save_data()
+            request_dashboard_update(bot)
+        else:
+            await send_error("操作権限がありません。")
+            return None
     # ─────────────────────────────────────────────
     # 5) 対象候補者 (guild / member) を探す
     # ─────────────────────────────────────────────
