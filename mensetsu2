@@ -74,6 +74,8 @@ MONTHLY_STATS_CHANNEL_ID: int = 1313069444272099449  # 統計表示先（月ご�
 ADMIN_ROLE_ID = 991112832655560825  # 管理者ロールID（手動追加用）
 SCHEDULE_MESSAGE_ID: int = 1377625660897624205        # 面接官の予定が書かれているメッセージ ID
 MANAGER_USER_ID:    int = 360280438654238720          # 推薦結果を DM する相手
+# 推薦対象外の面接官ID
+EXCLUDED_INTERVIEWER_IDS: set[int] = {1380340436677296279}
 # 「候補者」と見なすロール
 CANDIDATE_ROLE_IDS: set[int] = {
     784723518402592803,     # SPECIFIC_ROLE_ID
@@ -493,11 +495,16 @@ async def _recommend_interviewer_with_gemini(
         logger.warning("[autoAssign] 面接担当者ロールが見つからない / メンバーゼロ")
         return None
 
+    members = [m for m in role.members if m.id not in EXCLUDED_INTERVIEWER_IDS]
+    if not members:
+        logger.warning("[autoAssign] 面接担当者ロールに対象者がいません")
+        return None
+
     # ── 今月の面接回数を集計 ───────────────────────
     counts = _count_by_interviewer_this_month()
     info_lines = [
         f"{m.display_name} (ID:{m.id}) … {counts.get(m.id,0)} 回"
-        for m in sorted(role.members, key=lambda u: u.display_name)
+        for m in sorted(members, key=lambda u: u.display_name)
     ]
     info_block = "\n".join(info_lines) or "（今月はまだ面接回数がありません）"
 
@@ -546,7 +553,11 @@ async def _recommend_interviewer_with_gemini(
 
     # 「ID:xxxxxxxxxxxxxxx」を最大 3 件パース
     ids = re.findall(r"ID\s*:\s*(\d{17,20})", answer)[:3]
-    return [int(x) for x in ids if guild.get_member(int(x))] or None
+    return [
+        int(x)
+        for x in ids
+        if int(x) not in EXCLUDED_INTERVIEWER_IDS and guild.get_member(int(x))
+    ] or None
 
 # ------------------------------------------------
 # 推薦結果を処理（3 名表示・メンション付き）
