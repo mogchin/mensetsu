@@ -1965,6 +1965,12 @@ class MemoModal(discord.ui.Modal, title="面接メモの入力"):
                  f"候補者ユーザーID: {candidate_id}"
         )
 
+        channel_link: Optional[str] = None
+        channel_id = cp.get("channel_id")
+        if channel_id:
+            ch_obj: Optional[discord.TextChannel] = bot.get_channel(channel_id)
+            channel_link = ch_obj.mention if ch_obj else f"<#{channel_id}>"
+
         # ---------- ③ チャンネル取得 --------------------------
         additional_channel: Optional[discord.TextChannel] = main_guild.get_channel(
             ADDITIONAL_MEMO_CHANNEL_ID)
@@ -2002,6 +2008,12 @@ class MemoModal(discord.ui.Modal, title="面接メモの入力"):
                     name="📎 過去メモ (最新 ≤ 3 件)",
                     value="\n".join(link_lines),
                     inline=False
+                )
+            if channel_link:
+                btn_embed.add_field(
+                    name="📌 面接チャンネル",
+                    value=channel_link,
+                    inline=False,
                 )
             await button_channel.send(
                 embed=btn_embed,
