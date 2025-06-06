@@ -2913,6 +2913,20 @@ class MessageCog(commands.Cog):
         """プロフィール本文らしい投稿 / 編集を評価"""
         cp["profile_message_id"] = message.id
 
+        normalized = message.content.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        if re.search(r"(?:10|20|30)代", normalized) and not re.search(r"\d{2}\s*[歳才]", normalized):
+            await message.reply(
+                "プロフィール精査について\n"
+                "年齢が10代、20代、30代など曖昧な場合に\n"
+                "年齢を正確に明記いただくこと可能でしょうか？"
+            )
+            cp["pending_inrate_confirmation"] = False
+            cp["pending_move_confirmation"] = False
+            update_candidate_status(cp, "要修正")
+            await data_manager.save_data()
+            request_dashboard_update(self.bot)
+            return
+
         ok, fb = await evaluate_profile_with_ai(
             message.content,
             debug=True,
