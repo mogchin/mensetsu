@@ -3094,6 +3094,13 @@ class MessageCog(commands.Cog):
         # A. イン率確認フェーズへの返答
         # ──────────────────────────────────────────────
         if cp.get("pending_inrate_confirmation"):
+            # プロフィール全文を再投稿してきた場合はそのまま評価を行う
+            if looks_like_profile(message.content):
+                cp["pending_inrate_confirmation"] = False
+                await self._process_profile(message, cp, progress_key)
+                request_dashboard_update(self.bot)
+                return
+
             yn_inrate = await classify_yes_no_ai(message.content, debug=True)
 
             if yn_inrate == "YES":
@@ -3125,6 +3132,13 @@ class MessageCog(commands.Cog):
         # B. 移住予定確認フェーズへの返答
         # ──────────────────────────────────────────────
         if cp.get("pending_move_confirmation"):
+            # イン率と同様、再度プロフィールを投稿してきた可能性を考慮
+            if looks_like_profile(message.content):
+                cp["pending_move_confirmation"] = False
+                await self._process_profile(message, cp, progress_key)
+                request_dashboard_update(self.bot)
+                return
+
             yn_move = await classify_yes_no_ai(message.content, debug=True)
 
             if yn_move == "YES":
