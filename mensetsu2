@@ -2308,7 +2308,12 @@ class GuideCountCog(commands.Cog):
             try:
                 with open(self.DATA_FILE, "r", encoding="utf-8") as fp:
                     raw = json.load(fp)
-                self.monthly_counts   = raw.get("counts", {})
+
+                counts_raw = raw.get("counts", {})
+                self.monthly_counts = {
+                    ym: {int(uid): info for uid, info in users.items()}
+                    for ym, users in counts_raw.items()
+                }
                 self.monthly_messages = {k: int(v) for k, v in raw.get("messages", {}).items()}
                 logger.info("GuideCountCog: データロード成功")
             except Exception as e:
