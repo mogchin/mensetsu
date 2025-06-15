@@ -598,34 +598,7 @@ async def auto_assign_interviewer(
     # ダッシュボードを更新
     request_dashboard_update(bot)
 
-    # ─────────────────────────────────────────────────────────
-    # ★【新機能】担当者に任命されたことをDMで通知
-    # ─────────────────────────────────────────────────────────
-    try:
-        interviewer = await bot.fetch_user(primary_id)
-        if interviewer:
-            # cp['name'] に候補者名が保存されていることを期待
-            candidate_name = cp.get("name", candidate_channel.name)
-            
-            # 担当者へ送信するDMの内容を作成
-            message_to_interviewer = (
-                f"📄 **面接担当のお知らせ** 📄\n\n"
-                f"候補者「**{candidate_name}**」さんの面接担当に割り当てられました。\n\n"
-                f"以下の専用チャンネルで候補者と直接やり取りし、面接日程の調整をお願いします。\n"
-                f"▶ **専用チャンネル**: {candidate_channel.mention}\n\n"
-                f"よろしくお願いいたします。"
-            )
-            
-            await interviewer.send(message_to_interviewer)
-            logger.info(f"[autoAssign] 担当者 {primary_id} へ担当割り当てDMを送信しました。")
-
-    except discord.NotFound:
-        logger.warning(f"[autoAssign] 担当者ID {primary_id} が見つからず、DMを送信できませんでした。")
-    except discord.Forbidden:
-        logger.warning(f"[autoAssign] 担当者 {primary_id} へのDMがブロックされており、DMを送信できませんでした。")
-    except Exception as e:
-        logger.error(f"[autoAssign] 担当者へのDM送信中にエラーが発生しました: {e}", exc_info=True)
-    # ─────────────────────────────────────────────────────────
+    # Gemini 推薦結果に基づく DM 通知は行わない
 
     # ⑤ 管理者へ推薦リストをDMで通知 (既存の処理)
     admin = bot.get_user(MANAGER_USER_ID)
@@ -1153,6 +1126,34 @@ async def notify_interviewer_of_candidate_message(
         await data_manager.save_data()
     except Exception as e:
         logger.error(f"DM 通知失敗: {e}")
+
+
+async def notify_interviewer_assignment(
+    interviewer: discord.abc.User,
+    candidate_member: discord.Member,
+    candidate_channel: discord.TextChannel,
+    cp: Dict[str, Any]
+) -> None:
+    """面接担当者に割り当て通知を送信"""
+    if cp.get("notified_assignment"):
+        return
+    try:
+        await interviewer.send(
+            "📄 **面接担当のお知らせ** 📄\n\n"
+            f"候補者「**{candidate_member.display_name}**」さんの面接担当に割り当てられました。\n\n"
+            "以下の専用チャンネルで候補者と直接やり取りし、面接日程の調整をお願いします。\n"
+            f"▶ **専用チャンネル**: {candidate_channel.mention}\n\n"
+            "よろしくお願いいたします。"
+        )
+        cp["notified_assignment"] = True
+        await data_manager.save_data()
+        logger.info(f"担当者 {interviewer.id} へ割り当てDMを送信しました")
+    except discord.Forbidden:
+        logger.warning(
+            f"担当者 {interviewer.id} への割り当てDMがブロックされており、送信できませんでした。"
+        )
+    except Exception as e:
+        logger.error(f"担当者への割り当てDM送信中にエラーが発生しました: {e}")
 
 
 def get_interviewer_role(guild: discord.Guild) -> Optional[discord.Role]:
@@ -1875,8 +1876,19 @@ class VCControlView(discord.ui.View):
 
         # --- 3) 進捗 & マッピング更新 --------------------------
         cp['voice_channel_id'] = vc.id
+        if cp.get('interviewer_id') is None:
+            cp['interviewer_id'] = interaction.user.id
         data_manager.interview_channel_mapping[vc.id] = progress_key
         await data_manager.save_data()
+
+        # --- 3.5) 割り当て通知 -------------------------------
+        if cp.get('interviewer_id') == interaction.user.id:
+            await notify_interviewer_assignment(
+                interaction.user,
+                target_member,
+                channel,
+                cp,
+            )
 
         # --- 4) UI 反映 ---------------------------------------
         update_candidate_status(cp, "担当者待ち")
@@ -1988,6 +2000,14 @@ class VCControlView(discord.ui.View):
         cp["interviewer_id"] = interaction.user.id
         await data_manager.save_data()
         request_dashboard_update(interaction.client)
+
+        # ── 担当者へDM通知 ─────────────────────────────
+        await notify_interviewer_assignment(
+            interaction.user,
+            target_member,
+            interaction.channel,
+            cp,
+        )
 
         # ── モーダル表示 ─────────────────────────────────
         modal = ScheduleModal(progress_key, interaction.user.id)
@@ -2681,6 +2701,7 @@ class EventCog(commands.Cog):
             'scheduled_time': None,
             'notified_candidate': False,
             'notified_interviewer': False,
+            'notified_assignment': False,
             'notify_time': None,
             'failed': False,
             'profile_message_id': None,
