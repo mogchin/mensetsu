@@ -622,6 +622,58 @@ async def auto_assign_interviewer(
     logger.info("[autoAssign] --- 担当者自動割り当て処理完了 ---")
 
 # ------------------------------------------------
+# 自動割り当てを行わず、管理者へ推薦 DM のみ送信
+# ------------------------------------------------
+async def send_recommendation_dm(
+    bot: discord.Client,
+    candidate_channel: discord.TextChannel,
+    cp: dict[str, Any],
+) -> None:
+
+    # ① 予定表
+    schedule_text = await _fetch_schedule_text(bot)
+    if not schedule_text:
+        logger.warning("[recommendDM] 予定表メッセージが見つかりません。")
+        return
+
+    # ② 候補者プロフィール本文
+    profile_text = None
+    if cp.get("profile_message_id"):
+        try:
+            pm = await candidate_channel.fetch_message(cp["profile_message_id"])
+            profile_text = pm.content
+        except Exception:
+            pass
+
+    # ③ Gemini 推薦
+    recommended_ids = await _recommend_interviewer_with_gemini(
+        bot, schedule_text, profile_text
+    )
+    logger.info(f"[recommendDM] recommended_ids={recommended_ids}")
+    if not recommended_ids:
+        logger.warning("[recommendDM] Gemini から有効な推薦が得られませんでした。")
+        return
+
+    # ④ 管理者 DM
+    admin = bot.get_user(MANAGER_USER_ID)
+    if admin:
+        try:
+            counts = _count_by_interviewer_this_month()
+            lines = [
+                f"- <@{uid}> (今月 {counts.get(uid,0)} 回)"
+                for uid in recommended_ids
+            ]
+            await admin.send(
+                f"🔔 **{candidate_channel.mention}**\n"
+                "⏩ 推奨面接官（優先順）\n"
+                + "\n".join(lines)
+                + "\n(候補者の希望時間・予定表・回数を総合評価 / Gemini 推薦)"
+            )
+            logger.info("[recommendDM] 推薦結果 DM 送信完了")
+        except Exception as e:
+            logger.error(f"[recommendDM] 推薦結果 DM 失敗: {e}")
+
+# ------------------------------------------------
 # Gemini でプロフィール全文を評価するヘルパー（改善版）
 # ------------------------------------------------
 async def evaluate_profile_with_ai(
@@ -3168,9 +3220,9 @@ class MessageCog(commands.Cog):
                         await send_interviewer_notification(self.bot, ch, message.channel)
 
                 try:
-                    await auto_assign_interviewer(self.bot, message.channel, cp)
+                    await send_recommendation_dm(self.bot, message.channel, cp)
                 except Exception:
-                    logger.exception("auto_assign_interviewer で例外発生")
+                    logger.exception("send_recommendation_dm で例外発生")
 
         # ----------- NG / 要確認 -----------
         else:
