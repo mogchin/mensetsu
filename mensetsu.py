@@ -595,6 +595,19 @@ async def auto_assign_interviewer(
     await data_manager.save_data()
     logger.info(f"[autoAssign] interviewer_id を {primary_id} で保存しました。")
 
+    interviewer = bot.get_user(primary_id)
+    if interviewer:
+        candidate_member = (
+            candidate_channel.guild.get_member(cp.get("candidate_id"))
+            or await utils.safe_fetch_member(
+                candidate_channel.guild, cp.get("candidate_id")
+            )
+        )
+        if candidate_member:
+            await notify_interviewer_assignment(
+                interviewer, candidate_member, candidate_channel, cp
+            )
+
     # ダッシュボードを更新
     request_dashboard_update(bot)
 
