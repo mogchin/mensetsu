@@ -11,6 +11,29 @@ load_dotenv()
 # .env に GENAI_API_KEY=your-gemini-api-key を設定してください
 genai_client = genai.Client(api_key=os.getenv("GENAI_API_KEY"))
 
+
+def _genai_sync_call(
+    client: genai.Client,
+    model: str,
+    prompt: str,
+    *,
+    max_tokens: int,
+    temperature: float,
+) -> str:
+    resp = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=GenerateContentConfig(
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+            thinking_config=ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    return "".join(
+        getattr(part, "text", "")
+        for part in resp.candidates[0].content.parts
+    ).strip()
+
 # 以下、Discord Bot 用ライブラリ
 import discord
 from discord import app_commands, AuditLogAction
@@ -101,6 +124,14 @@ logging.basicConfig(
     ]
 )
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _trim(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 # ─────────────────────────────────────────────────────────
 # 月次進捗バー表示 ― 既存メッセージを探して更新（先月分も保持）
 # ─────────────────────────────────────────────────────────
@@ -174,7 +205,7 @@ async def update_stats(
             title       = f"面接担当者の面接回数 {year_month}",
             description = "各担当者の面接回数と進捗\n目標 **10 回**",
             color       = 0xf1c40f,
-            timestamp   = datetime.utcnow()
+            timestamp   = utcnow(),
         )
         for uid, cnt in sorted_exec or [(0, 0)]:
             member = guild_main.get_member(uid)
@@ -267,7 +298,7 @@ async def update_monthly_stats(bot: commands.Bot) -> None:
     embed = discord.Embed(
         title     = f"面接結果内訳 {year_month}",
         color     = 0x3498db,
-        timestamp = datetime.utcnow()
+        timestamp = utcnow(),
     )
     embed.add_field(name="合格者数",   value=f"{pass_cnt} 人",   inline=False)
     embed.add_field(name="不合格者数", value=f"{fail_cnt} 人",   inline=False)
@@ -532,18 +563,14 @@ async def _recommend_interviewer_with_gemini(
 """
 
     try:
-        resp = genai_client.models.generate_content(
-            model="gemini-2.5-flash-preview-05-20",
-            contents=prompt,
-            config=GenerateContentConfig(
-                max_output_tokens=64,
-                temperature=0,
-                thinking_config=ThinkingConfig(thinking_budget=0),
-            ),
+        answer = await asyncio.to_thread(
+            _genai_sync_call,
+            genai_client,
+            "gemini-2.5-flash-preview-05-20",
+            prompt,
+            max_tokens=64,
+            temperature=0.0,
         )
-        answer = "".join(
-            getattr(part, "text", "") for part in resp.candidates[0].content.parts
-        ).strip()
         logger.debug(f"[autoAssign] Gemini replied: {answer!r}")
 
     except Exception as e:
@@ -785,18 +812,14 @@ async def evaluate_profile_with_ai(
     prompt = f"{system_prompt}\n\n# ユーザー入力:\n```\n{text}\n```"
 
     try:
-        resp = genai_client.models.generate_content(
-            model="gemini-2.5-flash-preview-05-20",
-            contents=prompt,
-            config=GenerateContentConfig(
-                max_output_tokens=512,
-                temperature=0,
-                thinking_config=ThinkingConfig(thinking_budget=0),
-            ),
+        answer = await asyncio.to_thread(
+            _genai_sync_call,
+            genai_client,
+            "gemini-2.5-flash-preview-05-20",
+            prompt,
+            max_tokens=512,
+            temperature=0.0,
         )
-        answer = "".join(
-            getattr(p, "text", "") for p in resp.candidates[0].content.parts
-        ).strip()
 
         if debug:
             logger.info(f"[AI-RESP]\n{answer}")
@@ -840,16 +863,15 @@ async def is_affirmative_ai(text: str, *, debug: bool = False) -> bool:
 """.strip()
 
     try:
-        resp = genai_client.models.generate_content(
-            model="gemini-2.5-flash-preview-05-20",
-            contents=prompt,
-            config=GenerateContentConfig(
-                max_output_tokens=4,
-                temperature=0,
-                thinking_config=ThinkingConfig(thinking_budget=0),
-            ),
+        answer = await asyncio.to_thread(
+            _genai_sync_call,
+            genai_client,
+            "gemini-2.5-flash-preview-05-20",
+            prompt,
+            max_tokens=4,
+            temperature=0.0,
         )
-        answer = "".join(getattr(p, "text", "") for p in resp.candidates[0].content.parts).strip().upper()
+        answer = answer.upper()
 
         if debug:
             logger.info(f"[AFFIRMATIVE_AI] Q={text!r} → A={answer!r}")
@@ -887,18 +909,15 @@ async def classify_yes_no_ai(text: str, *, debug: bool = False) -> str:
 """.strip()
 
     try:
-        resp = genai_client.models.generate_content(
-            model="gemini-2.5-flash-preview-05-20",
-            contents=prompt,
-            config=GenerateContentConfig(
-                max_output_tokens=4,
-                temperature=0,
-                thinking_config=ThinkingConfig(thinking_budget=0),
-            ),
+        answer = await asyncio.to_thread(
+            _genai_sync_call,
+            genai_client,
+            "gemini-2.5-flash-preview-05-20",
+            prompt,
+            max_tokens=4,
+            temperature=0.0,
         )
-        answer = "".join(
-            getattr(p, "text", "") for p in resp.candidates[0].content.parts
-        ).strip().upper()
+        answer = answer.upper()
 
         if debug:
             logger.info(f"[CLASSIFY_YN] Q={text!r} → A={answer!r}")
@@ -1112,22 +1131,18 @@ class DataManager:
             try:
                 with open(self.file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    if isinstance(data, list): # 旧形式からの移行
-                        self.interview_records = data
-                    elif isinstance(data, dict):
-                        self.interview_records = data.get('interview_records', [])
-                        self.interviewer_stats_message_ids = data.get('interviewer_stats_message_ids', {})
-                        self.monthly_stats_message_ids = data.get('monthly_stats_message_ids', {})
-                        self.candidate_progress = data.get('candidate_progress', {})
-                        imap = data.get('interview_channel_mapping', {})
-                        self.interview_channel_mapping = {int(k): v for k, v in imap.items()}
-                        self.dashboard_message_id = data.get('dashboard_message_id')
-                        self.memo_history = data.get('memo_history', {})
-                        self.left_before_interview_logs = data.get('left_before_interview_logs', {}) # ★ 追加
-                    # logger.info("データロードに成功") # ログが多すぎるのでコメントアウト
-            except Exception as e:
-                import traceback
-                logger.error(f"データロードに失敗: {e}\n{traceback.format_exc()}")
+                if isinstance(data, list):  # 旧形式からの移行
+                    self.interview_records = data
+                elif isinstance(data, dict):
+                    self.interview_records = data.get('interview_records', [])
+                    self.interviewer_stats_message_ids = data.get('interviewer_stats_message_ids', {})
+                    self.monthly_stats_message_ids = data.get('monthly_stats_message_ids', {})
+                    self.candidate_progress = data.get('candidate_progress', {})
+                    imap = data.get('interview_channel_mapping', {})
+                    self.interview_channel_mapping = {int(k): v for k, v in imap.items()}
+                    self.dashboard_message_id = data.get('dashboard_message_id')
+                    self.memo_history = data.get('memo_history', {})
+                    self.left_before_interview_logs = data.get('left_before_interview_logs', {})  # ★ 追加
                 logger.info("データロードに成功")
             except Exception as e:
                 import traceback
@@ -1345,12 +1360,12 @@ async def update_dashboard(bot: discord.Client) -> None:
     embeds = []
     for key, config in embed_config.items():
         entries = dashboard_sections.get(key, [])
-        description = "\n".join(entries) if entries else "なし"
+        description = _trim("\n".join(entries) if entries else "なし", 4096)
         embed = discord.Embed(
             title=config["title"],
             description=description,
             color=config["color"],
-            timestamp=datetime.now(JST)
+            timestamp=utcnow(),
         )
         embed.set_footer(text="最終更新: " + now.strftime("%Y-%m-%d %H:%M:%S"))
         embeds.append(embed)
@@ -1743,10 +1758,14 @@ async def process_pass_action(interaction: discord.Interaction,
         m = re.search(r'@{10,}', memo_text)
         if m:
             memo_text = memo_text[:m.start()].rstrip()
+        memo_text = _trim(memo_text, 3800)
         embed = discord.Embed(
-            description=f"{target_member.mention}\n{memo_text}" if memo_text else target_member.mention,
+            description=_trim(
+                f"{target_member.mention}\n{memo_text}" if memo_text else target_member.mention,
+                4096,
+            ),
             color=0x00FF00,
-            timestamp=datetime.now(JST)
+            timestamp=utcnow()
         )
         await pass_channel.send(embed=embed)
 
@@ -2221,7 +2240,10 @@ class MemoModal(discord.ui.Modal, title="面接メモの入力"):
 
         # ---------- ② Embed 生成 ------------------------------
         interviewer_name = get_main_display_name(bot, interaction.user.id)
-        embed = discord.Embed(description=self.memo.value)
+        embed = discord.Embed(
+            description=_trim(self.memo.value, 4096),
+            timestamp=utcnow(),
+        )
         embed.set_author(name=str(target_member),
                          icon_url=target_member.display_avatar.url)
         embed.set_footer(
@@ -2582,7 +2604,7 @@ class GuideCountCog(commands.Cog):
             title       = f"案内回数 {ym}",
             description = f"進捗バー（目標 **{MONTHLY_GOAL} 回**）",
             color       = 0x1abc9c,
-            timestamp   = datetime.now(JST),
+            timestamp   = utcnow(),
         )
         for uid, info in items:
             bar = generate_custom_progress_bar(info["count"], MONTHLY_GOAL)
@@ -2923,9 +2945,11 @@ class EventCog(commands.Cog):
                 # 監査ログをチェックして、キックでないことを確認
                 is_kick = False
                 try:
-                    latest_kick_log = await member.guild.audit_logs(action=discord.AuditLogAction.kick, limit=1).flatten()
-                    if latest_kick_log:
-                        entry = latest_kick_log[0]
+                    entry: Optional[discord.AuditLogEntry] = None
+                    async for log in member.guild.audit_logs(action=discord.AuditLogAction.kick, limit=1):
+                        entry = log
+                        break
+                    if entry:
                         now_utc = datetime.now(timezone.utc)
                         if entry.target and entry.target.id == member.id and (now_utc - entry.created_at).total_seconds() < 5:
                             is_kick = True
@@ -2955,16 +2979,15 @@ class EventCog(commands.Cog):
 
                         embed = discord.Embed(
                             title="候補者退出（面接前）",
-                            description=f"候補者が面接プロセス中にサーバーから退出しました。",
-                            color=0xffa500, # Orange
-                            timestamp=datetime.now(JST)
+                            description="候補者が面接プロセス中にサーバーから退出しました。",
+                            color=0xffa500,  # Orange
+                            timestamp=utcnow(),
                         )
                         embed.add_field(name="候補者", value=f"{member.display_name} (`{member.name}`)", inline=False)
                         embed.add_field(name="ユーザーID", value=str(member.id), inline=False)
                         embed.add_field(name="退出時のステータス", value=cp.get("status", "不明"), inline=False)
-                        if len(profile_text) > 1024:
-                            profile_text = profile_text[:1021] + "..."
-                        embed.add_field(name="プロフィール", value=f"```\n{profile_text}\n```", inline=False)
+                        profile_excerpt = _trim(profile_text, 1000)
+                        embed.add_field(name="プロフィール", value=f"```\n{profile_excerpt}\n```", inline=False)
                         embed.set_footer(text="自動記録")
                         try:
                             sent_message = await log_channel.send(embed=embed)
@@ -4017,7 +4040,7 @@ class AdminCog(commands.Cog):
         latest_interviewer_by_user: dict[int, int | None] = {}
         for rec in reversed(data_manager.interview_records):
             uid = rec.get("interviewee_id")
-            if uid is None or uid in latest_interviewer_by_user:
+            if not isinstance(uid, int) or uid in latest_interviewer_by_user:
                 continue
             latest_interviewer_by_user[uid] = rec.get("interviewer_id")
 
