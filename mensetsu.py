@@ -732,7 +732,6 @@ async def evaluate_profile_with_ai(
 10. 短所
 11. アピールポイント
 12. 今すぐ面接可能（〇/×）
-13. いつまでに面接してほしいか
 
 #### 任意項目
 - 「面接できる時間帯」は任意項目です。内容が曖昧でも、未記入でも不備として指摘しないでください。
@@ -2686,7 +2685,7 @@ class GuideCountCog(commands.Cog):
         name        = "adjust_guide_count",
         description = "案内回数を手動で調整します（add/sub/set）",
     )
-    @app_commands.checks.has_role(ADMIN_ROLE_ID)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         guide = "対象の案内担当者（メンバー）",
         count = "調整値 (0 以上の整数)",
@@ -3611,19 +3610,32 @@ class MessageCog(commands.Cog):
 # ------------------------------------------------
 # AdminCog（管理者用コマンド）
 # ------------------------------------------------
+
+def is_admin_or_has_role(role_id: int):
+    """管理者、または指定されたロールIDを持つユーザーのみコマンド実行を許可するカスタムチェック。"""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        # 管理者権限を持っているかチェック
+        if interaction.permissions.administrator:
+            return True
+        # Member オブジェクトであり、かつ指定ロールを持っているかチェック
+        if isinstance(interaction.user, discord.Member):
+            return any(r.id == role_id for r in interaction.user.roles)
+        return False
+    return app_commands.check(predicate)
+
 class AdminCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @app_commands.command(name="update_stats", description="統計を手動更新して出力します")
-    @app_commands.checks.has_role(ADMIN_ROLE_ID)
+    @app_commands.checks.has_permissions(administrator=True)
     async def update_stats_command(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         await update_stats(self.bot)
         await interaction.followup.send("統計情報を更新しました。", ephemeral=True)
 
     @app_commands.command(name="remove_ban", description="対象ユーザーのBAN／インターバルを手動で解除します（メインサーバー専用）")
-    @app_commands.checks.has_role(ADMIN_ROLE_ID)
+    @app_commands.checks.has_permissions(administrator=True)
     async def remove_ban_command(self, interaction: discord.Interaction, target: discord.Member):
         if interaction.guild.id != MAIN_GUILD_ID:
             await interaction.response.send_message("このコマンドはメインサーバーでのみ使用可能です。", ephemeral=True)
@@ -3636,7 +3648,7 @@ class AdminCog(commands.Cog):
         await interaction.response.send_message(f"{target.mention} のBAN／インターバルを手動で解除しました。", ephemeral=True)
 
     @app_commands.command(name="ban_list", description="現在のBAN／インターバル対象の一覧を表示します（メインサーバー専用）")
-    @app_commands.checks.has_role(ADMIN_ROLE_ID)
+    @app_commands.checks.has_permissions(administrator=True)
     async def ban_list_command(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         if interaction.guild.id != MAIN_GUILD_ID:
@@ -3670,6 +3682,40 @@ class AdminCog(commands.Cog):
         for chunk in message_chunks:
             await interaction.followup.send(chunk, ephemeral=True)
 
+    @app_commands.command(name="add_ban", description="指定したIDのユーザーをBAN／インターバルリストに手動で追加します。")
+    @is_admin_or_has_role(ADMIN_ROLE_ID)
+    @app_commands.describe(
+        user_id="対象ユーザーのID",
+        ban_type="種別を選択してください",
+    )
+    @app_commands.choices(ban_type=[
+        app_commands.Choice(name="BAN (無期限)", value="BAN"),
+        app_commands.Choice(name="インターバル (90日)", value="INTERVAL"),
+    ])
+    async def add_ban_command(self, interaction: discord.Interaction, user_id: str, ban_type: str):
+        try:
+            target_id = int(user_id)
+        except ValueError:
+            await interaction.response.send_message("ユーザーIDは数字で入力してください。", ephemeral=True)
+            return
+
+        if ban_manager.check_ban(target_id):
+            target_user = await self.bot.fetch_user(target_id)
+            mention = target_user.mention if target_user else f"ユーザーID `{target_id}`"
+            await interaction.response.send_message(f"{mention} は既にリストに登録されています。", ephemeral=True)
+            return
+
+        ban_manager.add_ban(
+            user_id=target_id,
+            ban_origin="manual",
+            ban_type=ban_type.upper()
+        )
+
+        target_user = await self.bot.fetch_user(target_id)
+        mention = target_user.mention if target_user else f"ユーザーID `{target_id}`"
+        await interaction.response.send_message(f"{mention} を {ban_type.upper()} リストに手動で追加しました。", ephemeral=True)
+        logger.info(f"/add_ban: {target_id} を {ban_type.upper()} に追加 by {interaction.user.id}")
+
     # ------------------------------------------------
     # /add_manual_count ─ 手動で面接回数を調整
     # ------------------------------------------------
@@ -3677,7 +3723,7 @@ class AdminCog(commands.Cog):
         name="add_manual_count",
         description="面接官の面接回数を手動調整します（add / sub / set）"
     )
-    @app_commands.checks.has_role(ADMIN_ROLE_ID)
+    @is_admin_or_has_role(ADMIN_ROLE_ID)
     @app_commands.describe(
         interviewer="対象の面接官メンバー",
         count="調整値 (0 以上の整数)",
@@ -4028,6 +4074,91 @@ class AdminCog(commands.Cog):
         else:
             logger.error("/list_passed_candidates エラー", exc_info=True)
             text = "コマンド実行中にエラーが発生しました。"
+        if interaction.response.is_done():            await interaction.followup.send(text, ephemeral=True)
+        else:            await interaction.response.send_message(text, ephemeral=True)
+
+    @app_commands.command(name="check_permissions", description="指定ユーザーのチャンネル権限を詳細に確認します")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(target="確認対象のメンバー", channel="確認対象のテキストチャンネル")
+    async def check_permissions_command(self, interaction: discord.Interaction, target: discord.Member, channel: discord.TextChannel):
+        """指定されたユーザーの、指定されたチャンネルにおける権限の詳細を調査して表示する"""
+        await interaction.response.defer(ephemeral=True)
+
+        # 1. ユーザーが持つロールの一覧
+        user_roles = target.roles
+        role_names = [role.name for role in user_roles]
+
+        # 2. チャンネルの権限上書き設定（オーバーライト）を取得
+        overwrites = channel.overwrites
+
+        # 3. 最終的に計算された権限
+        final_perms = channel.permissions_for(target)
+
+        # --- Embedを作成して結果を表示 ---
+        embed = discord.Embed(
+            title="権限詳細チェック",
+            description=f"**ユーザー:** {target.mention}**チャンネル:** {channel.mention}",
+            color=discord.Color.orange()
+        )
+
+        embed.add_field(name="保有ロール一覧", value="`".join(role_names) or "なし", inline=False)
+
+        # --- オーバーライトの詳細 --- 
+        overwrite_details = []
+        # @everyone
+        everyone_overwrite = overwrites.get(interaction.guild.default_role)
+        if everyone_overwrite:
+            allow, deny = everyone_overwrite.pair()
+            overwrite_details.append(f"**@everyone**:")
+            if [p for p, v in allow if v]:
+                overwrite_details.append(f"  許可: `{', '.join([p for p, v in allow if v])}`")
+            if [p for p, v in deny if v]:
+                overwrite_details.append(f"  拒否: `{', '.join([p for p, v in deny if v])}`")
+
+        # ユーザーの各ロール
+        for role in sorted(user_roles, key=lambda r: r.position, reverse=True):
+            role_overwrite = overwrites.get(role)
+            if role_overwrite:
+                allow, deny = role_overwrite.pair()
+                overwrite_details.append(f"**{role.name} (ロール)**:")
+                if [p for p, v in allow if v]:
+                    overwrite_details.append(f"  許可: `{', '.join([p for p, v in allow if v])}`")
+                if [p for p, v in deny if v]:
+                    overwrite_details.append(f"  拒否: `{', '.join([p for p, v in deny if v])}`")
+        
+        # ユーザー固有
+        user_overwrite = overwrites.get(target)
+        if user_overwrite:
+            allow, deny = user_overwrite.pair()
+            overwrite_details.append(f"**{target.display_name} (ユーザー固有)**:")
+            if [p for p, v in allow if v]:
+                overwrite_details.append(f"  許可: `{', '.join([p for p, v in allow if v])}`")
+            if [p for p, v in deny if v]:
+                overwrite_details.append(f"  拒否: `{', '.join([p for p, v in deny if v])}`")
+        if overwrite_details:
+            embed.add_field(name="チャンネル権限オーバーライド", value="\n".join(overwrite_details), inline=False)
+        else:
+            embed.add_field(name="チャンネル権限オーバーライド", value="なし", inline=False)
+
+        # --- 最終権限 --- 
+        final_perms_list = [
+            f"チャンネルの表示: {'✅' if final_perms.view_channel else '❌'}",
+            f"メッセージを送信: {'✅' if final_perms.send_messages else '❌'}",
+            f"スレッドの作成: {'✅' if final_perms.create_public_threads else '❌'}",
+            f"埋め込みリンク: {'✅' if final_perms.embed_links else '❌'}",
+            f"ファイルの添付: {'✅' if final_perms.attach_files else '❌'}"
+        ]
+        embed.add_field(name="最終的な計算権限", value="\n".join(final_perms_list), inline=False)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @check_permissions_command.error
+    async def check_permissions_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, (app_commands.MissingPermissions, app_commands.MissingAnyRole, app_commands.MissingRole)):
+            text = "このコマンドは管理者権限が必要です。"
+        else:
+            logger.error("/check_permissions エラー", exc_info=True)
+            text = "内部エラーが発生しました。ログを確認してください。"
         if interaction.response.is_done():
             await interaction.followup.send(text, ephemeral=True)
         else:
